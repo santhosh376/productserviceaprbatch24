@@ -1,4 +1,4 @@
-package com.example.productserviceaprbatch24.dtos;
+package com.example.productserviceaprbatch24.dtos.products;
 
 import com.example.productserviceaprbatch24.models.Product;
 import lombok.Getter;
@@ -7,7 +7,7 @@ import lombok.Setter;
 @Getter
 @Setter
 public class CreateProductResponseDto {
-    private long id;
+    private Long id;
     private String title;
     private String description;
     private double price;

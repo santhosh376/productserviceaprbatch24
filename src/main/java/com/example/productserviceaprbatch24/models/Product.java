@@ -7,7 +7,7 @@ import java.util.Locale;
 @Getter
 @Setter
 public class Product {
-    private long id;
+    private Long id;
     private String title;
     private String description;
     private double price;
