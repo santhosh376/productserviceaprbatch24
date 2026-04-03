@@ -7,6 +7,7 @@ import com.example.productservice.services.ProductService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.client.RestTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,15 +31,19 @@ public class ProductController {
     public String productServiceType;*/
 
     //Dependency Injection
-    private ProductService productService;
+    private final ProductService productService;
+    private final RestTemplate restTemplate;
 
-    public ProductController(@Qualifier("fakeStoreProductService") ProductService productService) {
-        this.productService = productService;;
+    public ProductController(@Qualifier("fakeStoreProductService") ProductService productService,RestTemplate restTemplate) {
+        this.productService = productService;
+        this.restTemplate = restTemplate;
     }
 
     //get the single product  by id
     @GetMapping("/{id}")
     public ResponseEntity<GetProductResponseDTO> getProductById(@PathVariable("id") Long id) throws ProductNotFoundException {
+
+        System.out.println("Yes API is hitting");
 
         try {
             if(id < 0 ){
@@ -84,7 +89,15 @@ public class ProductController {
 
     //add the product
     @PostMapping()
-    public CreateProductResponseDto createProduct(@RequestBody CreateProductRequestDto createProductRequestDto) {
+    public CreateProductResponseDto createProduct(@RequestHeader("Authorization")String token, @RequestBody CreateProductRequestDto createProductRequestDto) {
+        boolean isAuthenticated = restTemplate.getForObject("http://userService/auth/validate?token="+token,Boolean.class);
+
+        System.out.println("isAuthenticated = " + isAuthenticated);
+
+        if(!isAuthenticated){
+            throw new RuntimeException("STOP HERE");
+        }
+
         Product product = productService.createProduct(
                 createProductRequestDto.toProduct()
         );
