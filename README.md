@@ -112,7 +112,7 @@ That setup allows:
 
 ### Inter-service communication: User Service
 userService microservice repo link:
-[User Service Authorization](https://github.com/santhosh376/userServiceAuthorization)
+[User Service Authorization](https://github.com/santhosh376/userService)
 
 The User Service is expected to register with the **same** Eureka server under the logical name **`userService`**. Product Service uses the shared, **`@LoadBalanced`** `RestTemplate` bean so URLs like `http://userService/...` are resolved through Eureka (client-side load balancing when multiple instances exist).
 
