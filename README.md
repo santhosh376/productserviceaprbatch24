@@ -10,7 +10,8 @@ A Spring Boot 3 RESTful API for managing products and categories, backed by MySQ
 - **Persistence**: Spring Data JPA / Hibernate
 - **Database**: MySQL
 - **Migrations**: Flyway (`src/main/resources/db/migration`)
-- **HTTP client**: `RestTemplate` (for FakeStore integration)
+- **Service discovery**: Spring Cloud Netflix Eureka Client (`spring-cloud-starter-netflix-eureka-client`)
+- **HTTP client**: `@LoadBalanced` `RestTemplate` (FakeStore integration and Eureka-resolved calls to other services, such as the User Service)
 - **Caching**: Redis (Spring Data Redis with `RedisTemplate`)
 - **Testing**: JUnit 5, Spring Boot Test, MockMvc
 
@@ -18,18 +19,19 @@ A Spring Boot 3 RESTful API for managing products and categories, backed by MySQ
 
 - **`src/main/java/com/example/productservice`**
   - **`Productservice`**: Spring Boot entry point (`@SpringBootApplication`).
-  - **`controllers`**: REST controllers (e.g. `ProductController`) exposing `/products` endpoints.
+  - **`controllers`**: REST controllers — `ProductController` (`/products`), `SearchController` (`/search`), `HealthController` (`/health`).
   - **`services`**:
     - `ProductService`: service interface.
-    - `ProductServiceDBImpl`: database-backed implementation (used by the controller via `@Qualifier("dbProductService")`).
+    - `ProductServiceDBImpl`: database-backed implementation used by `ProductController` via `@Qualifier("dbProductService")`.
     - `ProductServiceFakestoreImpl`: alternative implementation that integrates with `https://fakestoreapi.com` using `RestTemplate`.
+    - `SearchService`: search with filters and sorting (`filteringService`, `sortingService` packages).
   - **`models`**: JPA entities (`BaseModel`, `Product`, `Category`, `Subcategory`).
   - **`repositories`**: Spring Data JPA repositories (`ProductRepository`, `CategoryRepository`) with derived queries and custom JPQL/native queries.
   - **`dtos`**: Request/response DTOs for products, FakeStore integration, and error responses.
-  - **`configs`**: Application configuration (`ApplicationConfiguration` defines the `RestTemplate` bean).
+  - **`configs`**: Application configuration (`ApplicationConfiguration` defines a `@LoadBalanced` `RestTemplate` bean for client-side load balancing against Eureka-registered services).
   - **`advices`**: Global exception handling (`ExceptionAdvices`).
 - **`src/main/resources`**
-  - **`application.properties`**: application name, datasource, JPA, and Flyway settings.
+  - **`application.properties`**: application name, datasource, JPA, Flyway, Redis, Eureka client, and server port (several values are supplied via environment variables).
   - **`db/migration`**: Flyway SQL migrations creating and evolving the schema.
 - **`src/test/java/com/example/productservice/controllers`**
   - `ProductControllerTest`: controller unit test with mocked `ProductService`.
@@ -47,12 +49,12 @@ The service uses MySQL as the primary data store and Flyway for schema managemen
 #### Required database setup
 
 1. **Create a MySQL database** (name must match the one in `application.properties` or your override):
-   - Example from the current config: `productservice27july`.
+  - Example from the current config: `productservice27july`.
 2. **Create a database user** with permissions on that database:
-   - Username is configured in `application.properties` (e.g. `dbuserproductservice24july`).
+  - Username is configured in `application.properties` (e.g. `dbuserproductservice24july`).
 3. **Configure credentials**:
-   - Either update `spring.datasource.username` and `spring.datasource.password` in `src/main/resources/application.properties`,
-   - Or set the corresponding environment variables (e.g. `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`).
+  - Either update `spring.datasource.username` and `spring.datasource.password` in `src/main/resources/application.properties`,
+  - Or set the corresponding environment variables (e.g. `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`).
 
 Once the datasource is configured, Flyway will create/update the schema the first time the app starts.
 
@@ -62,7 +64,20 @@ Once the datasource is configured, Flyway will create/update the schema the firs
 
 - Java 21 installed.
 - MySQL running and reachable with the configured URL and credentials.
+- **Eureka server** running and reachable at the URL you set in `SERVICE_DISCOVERY_URL` (this service registers with Eureka and uses the registry to resolve other microservices by logical name).
 - Maven wrapper (`mvnw`) is included in the project (or a system Maven installation).
+
+#### Environment variables
+
+The app reads several values from the environment (see `src/main/resources/application.properties`):
+
+| Variable | Purpose |
+|----------|---------|
+| `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` | MySQL JDBC URL and credentials |
+| `SERVICE_DISCOVERY_URL` | Eureka server base URL (for example `http://localhost:8761/eureka/`) |
+| `SERVER_PORT` | Port this service listens on |
+
+Note: `application.properties` includes `productServiceType` for reference, but **`ProductController` selects the implementation with a fixed `@Qualifier`** (`dbProductService`). To use FakeStore instead, change the qualifier to `fakeStoreProductService` or introduce conditional wiring.
 
 #### Steps
 
@@ -73,7 +88,7 @@ Once the datasource is configured, Flyway will create/update the schema the firs
    cd productservice
    ```
 
-2. **Verify / adjust datasource configuration** in `src/main/resources/application.properties` or via environment variables as described above.
+2. **Verify / adjust configuration**: set database and Eureka-related environment variables (see table above). You can still override individual Spring properties in `application.properties` if you prefer.
 
 3. **Build and run** using the Maven wrapper:
 
@@ -82,14 +97,47 @@ Once the datasource is configured, Flyway will create/update the schema the firs
    ./mvnw spring-boot:run
    ```
 
-   The application will start on the default Spring Boot port `8080` (unless overridden).
+   The application listens on the port given by `SERVER_PORT` (not the Spring Boot default unless you set it that way).
+
+### Eureka service discovery
+servicediscovery microservice repo link:
+[Service Discovery (Eureka)](https://github.com/santhosh376/servicediscovery)
+
+This service is a **Eureka client**: it registers itself under the name `productservice` (`spring.application.name`) and **fetches the registry** from Eureka (`eureka.client.register-with-eureka=true`, `eureka.client.fetch-registry=true`). The Eureka server URL is configured with `eureka.client.service-url.defaultZone=${SERVICE_DISCOVERY_URL}`.
+
+That setup allows:
+
+- Other components (API Gateway, other microservices) to discover **this** service by name.
+- This service to call **other** Eureka-registered applications using their logical host names in URLs (see below).
+
+### Inter-service communication: User Service
+userService microservice repo link:
+[User Service Authorization](https://github.com/santhosh376/userServiceAuthorization)
+
+The User Service is expected to register with the **same** Eureka server under the logical name **`userService`**. Product Service uses the shared, **`@LoadBalanced`** `RestTemplate` bean so URLs like `http://userService/...` are resolved through Eureka (client-side load balancing when multiple instances exist).
+
+**Where it is used in this codebase**
+
+- **`POST /products`** sends the `Authorization` request header to **User Service** for validation: it calls `http://userService/auth/validate?token=<token>` and expects a `Boolean`. If the result is not authenticated, the controller throws a `RuntimeException` (`"STOP HERE"`).
+
+Ensure User Service exposes that validation endpoint and is registered in Eureka as `userService` (or align the URL with your actual Eureka application name).
+
+### API Gateway integration
+API Gateway microservice repo link:
+[API Gateway](https://github.com/santhosh376/APIGateway)
+
+The **API Gateway** is typically a separate Spring Cloud Gateway (or similar) application that **also registers as a Eureka client**. Gateway routes are often defined with targets such as `lb://productservice`, so traffic enters through the gateway, which looks up **productservice** in Eureka and forwards to a healthy instance.
+
+You can **verify end-to-end gateway behavior** by invoking Product Service routes **through the gateway** (for example `/products`, `/products/{id}`, or other exposed paths), confirming that discovery, routing, and load balancing work together. The gateway project is not part of this repository; this service only needs to register with Eureka and expose its REST API as documented below.
 
 ### API overview
 
-All endpoints are rooted at **`/products`** and handled by `ProductController`.
+#### Product API (`ProductController`)
+
+Endpoints below are rooted at **`/products`**.
 
 - **GET `/products`**
-  - **Description**: Returns all products from the database.
+  - **Description**: Returns all products from the database via `dbProductService`.
   - **Response**: A DTO wrapping a list of product representations (see `GetAllProductsResponseDto` / `GetProductDto`).
 
 - **GET `/products/{id}`**
@@ -102,8 +150,10 @@ All endpoints are rooted at **`/products`** and handled by `ProductController`.
 
 - **POST `/products`**
   - **Description**: Creates a new product.
+  - **Headers**: **`Authorization`** — forwarded to User Service for validation (see *Inter-service communication: User Service*).
   - **Request body**: `CreateProductRequestDto` (includes product fields such as `title`, `description`, `price`, `imageUrl`, and category info).
   - **Behavior**:
+    - Validates the token via Eureka-resolved **`userService`** (`/auth/validate`).
     - `ProductServiceDBImpl` ensures the category exists (creating it if necessary) and saves the product.
   - **Response**: `CreateProductResponseDto` with the persisted product data.
 
@@ -117,6 +167,22 @@ All endpoints are rooted at **`/products`** and handled by `ProductController`.
 - **PUT `/products/{id}`** and **DELETE `/products/{id}`**
   - Currently stubbed out in `ProductController` and return an empty `Product` instance.
   - Intended for full replace and delete operations; their implementations can be added following the patterns already used in the service layer.
+
+#### Search API (`SearchController`)
+
+- **GET `/search/`**
+  - **Description**: Text search on product titles with optional filters, sorting, and pagination.
+  - **Query parameters**: `query`, `filters` (list of `FilterDto`), `sortBy` (`SortingCriteria`), `pageNumber`, `pageSize`.
+  - **Behavior**: Uses `SearchService` with `FilterFactory` / `SorterFactory` over repository results.
+  - **Response**: `SearchResponseDto` containing a page of `GetProductDto` items.
+
+- **GET `/search/byCategory`**
+  - Declared in `SearchController`; implementation currently returns `null` (placeholder).
+
+#### Health check (`HealthController`)
+
+- **GET `/health`**
+  - Returns the plain string **`OK`**. Used for load balancer / Elastic Beanstalk health checks (see *Deployment*).
 
 ### Service implementations
 
@@ -134,7 +200,7 @@ All endpoints are rooted at **`/products`** and handled by `ProductController`.
     - Mapping between internal `Product` model and FakeStore request/response DTOs.
     - Creating and fetching products from an external API.
     - Redis-backed read-through caching for `getProductById`.
-  - Currently not wired into `ProductController`, but can be injected via `@Qualifier("fakeStoreProductService")` if you want to switch to the FakeStore-backed implementation.
+  - Not wired into `ProductController` by default; inject via `@Qualifier("fakeStoreProductService")` if you want the FakeStore-backed implementation.
 
 ### Redis caching usage
 
@@ -216,7 +282,7 @@ EC2 Instance (Elastic Beanstalk Environment)
 ↓  
 Spring Boot Application (Port 5000)  
 ↓  
-AWS RDS MySQL Database (Port 3306)  
+AWS RDS MySQL Database (Port 3306)
 
 
 ---
@@ -241,9 +307,9 @@ This JAR file was uploaded to the Elastic Beanstalk environment for deployment.
 2. Selected **Java Corretto platform** for running the Spring Boot application.
 3. Uploaded the generated **JAR file** to Elastic Beanstalk.
 4. Elastic Beanstalk automatically provisioned the required infrastructure including:
-  - EC2 instance
-  - Load balancer
-  - Nginx configuration
+- EC2 instance
+- Load balancer
+- Nginx configuration
 5. Configured environment variables and database connection properties.
 6. Connected the application to **AWS RDS MySQL** database.
 7. Configured a health check endpoint to monitor application status.
@@ -328,6 +394,7 @@ To avoid unnecessary AWS charges, the Elastic Beanstalk environment and related 
 ### Notes & next steps
 
 - **PUT/DELETE implementations**: The `replaceProduct` and `deleteProductById` methods in `ProductController` are currently placeholders and can be implemented using `ProductRepository` operations.
-- **Configurable service backend**: For experimentation, you can switch from `dbProductService` to `fakeStoreProductService` in the controller constructor or via Spring configuration/profiles.
-- **Validation & security**: Input validation, authentication, and authorization are not yet implemented and can be added depending on your requirements.
+- **Configurable service backend**: `ProductController` injects `dbProductService`. Switch the `@Qualifier` to `fakeStoreProductService` (or use profiles) to use the FakeStore-backed implementation for product CRUD.
+- **Validation & security**: `POST /products` delegates token checks to User Service; broader validation, authentication schemes, and authorization rules can be extended as needed.
+- **`/search/byCategory`**: Endpoint stub — implement or remove when finalizing the search API.
 
